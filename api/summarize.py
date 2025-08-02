@@ -15,10 +15,9 @@ class handler(BaseHTTPRequestHandler):
             self.send_header('Access-Control-Allow-Headers', 'Content-Type')
             self.end_headers()
 
+            # Video URL al
             content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            data = json.loads(post_data.decode('utf-8'))
-            
+            data = json.loads(self.rfile.read(content_length).decode('utf-8'))
             video_url = data.get('videoUrl')
             
             # Video ID çıkar
@@ -70,7 +69,7 @@ class handler(BaseHTTPRequestHandler):
         if transcript and len(transcript) > 100:
             return transcript
         
-        # Fallback (yt-dlp Vercel'de çalışmaz, direkt fallback'e geç)
+        # Son olarak fallback
         return self.fallback_transcript(video_id)
     
     def try_simple_transcript(self, video_id):
@@ -97,8 +96,7 @@ class handler(BaseHTTPRequestHandler):
                         if transcript:
                             print("✅ Basit requests ile transcript alındı!")
                             return transcript
-                except Exception as e:
-                    print(f"URL hatası: {e}")
+                except:
                     continue
             
             return None
@@ -179,8 +177,8 @@ class handler(BaseHTTPRequestHandler):
                     'channel': data.get('author_name', 'YouTube Kanalı'),
                     'thumbnail': f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"
                 }
-        except Exception as e:
-            print(f"Video info hatası: {e}")
+        except:
+            pass
         
         # Fallback
         return {
@@ -193,11 +191,11 @@ class handler(BaseHTTPRequestHandler):
         """Google Gemini ile özet yap"""
         print("🤖 Gemini API'ye istek gönderiliyor...")
         
-        # Vercel environment variable'dan al
+        # Vercel environment variable'dan API key al
         api_key = os.environ.get('GEMINI_API_KEY')
         
         if not api_key:
-            return "⚠️ Gemini API key bulunamadı. Lütfen environment variable ekleyin."
+            return "⚠️ Gemini API key gerekli! Lütfen environment variable ekleyin."
         
         # Transcript'i kısalt (çok uzunsa)
         if len(transcript) > 15000:
