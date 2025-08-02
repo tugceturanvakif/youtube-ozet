@@ -3,6 +3,8 @@ import json
 import re
 import requests
 import os
+import subprocess
+import tempfile
 import xml.etree.ElementTree as ET
 
 class handler(BaseHTTPRequestHandler):
@@ -15,12 +17,12 @@ class handler(BaseHTTPRequestHandler):
             self.send_header('Access-Control-Allow-Headers', 'Content-Type')
             self.end_headers()
 
-            # Video URL al
             content_length = int(self.headers['Content-Length'])
-            data = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode('utf-8'))
+            
             video_url = data.get('videoUrl')
             
-            # Video ID çıkar
             match = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11})', video_url)
             if not match:
                 raise Exception("Geçersiz YouTube URL")
@@ -28,11 +30,11 @@ class handler(BaseHTTPRequestHandler):
             video_id = match.group(1)
             print(f"✅ Video ID: {video_id}")
             
-            # Gerçek transcript al
-            transcript = self.get_youtube_transcript(video_id)
+            # Transcript al
+            transcript = self.get_transcript_with_ytdlp(video_id)
             print(f"📄 Transcript uzunluğu: {len(transcript)} karakter")
             
-            # Video bilgilerini al (basit)
+            # Video bilgilerini al
             video_info = self.get_video_info(video_id)
             
             # Gemini ile özet yap
@@ -60,140 +62,73 @@ class handler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
     
-    def get_youtube_transcript(self, video_id):
-        """Alternatif transcript yöntemleri"""
-        print("📝 YouTube transcript alınıyor...")
-        
-        # Önce basit requests ile dene
-        transcript = self.try_simple_transcript(video_id)
-        if transcript and len(transcript) > 100:
-            return transcript
-        
-        # yt-dlp Vercel'de çalışmaz, direkt fallback'e git
-        return self.fallback_transcript(video_id)
-    
-    def try_simple_transcript(self, video_id):
-        """yt-dlp benzeri güçlü transcript alma"""
+    def get_transcript_with_ytdlp(self, video_id):
+        """yt-dlp ile transcript al - Vercel uyumlu"""
         try:
-            print("🔄 yt-dlp benzeri transcript alma...")
+            print("🔄 yt-dlp ile transcript alınıyor...")
             
-            # YouTube video sayfasını al
-            video_url = f"https://www.youtube.com/watch?v={video_id}"
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7'
-            }
-            
-            response = requests.get(video_url, headers=headers, timeout=20)
-            if response.status_code != 200:
-                print("Video sayfası alınamadı")
-                return None
+            # Temp directory oluştur
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # yt-dlp komutunu hazırla
+                cmd = [
+                    'python', '-m', 'yt_dlp',
+                    '--write-auto-sub',
+                    '--sub-lang', 'tr,en',
+                    '--skip-download',
+                    '--sub-format', 'vtt',
+                    '--output', f'{temp_dir}/%(id)s.%(ext)s',
+                    f'https://www.youtube.com/watch?v={video_id}'
+                ]
                 
-            page_content = response.text
-            
-            # ytInitialPlayerResponse'dan caption tracks'i çıkar
-            import re
-            
-            # Player response'u bul
-            player_response_match = re.search(r'ytInitialPlayerResponse["\s]*=["\s]*(\{.+?\});', page_content)
-            if not player_response_match:
-                player_response_match = re.search(r'"playerResponse":"(\{.*?\})"', page_content)
-                
-            if player_response_match:
+                # yt-dlp çalıştır
                 try:
-                    import json
-                    player_data_str = player_response_match.group(1)
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
                     
-                    # JSON string'i unescape et
-                    if player_data_str.startswith('"'):
-                        player_data_str = player_data_str[1:-1]
-                        player_data_str = player_data_str.replace('\\"', '"').replace('\\\\', '\\')
-                    
-                    player_data = json.loads(player_data_str)
-                    
-                    # Caption tracks'i bul
-                    captions = player_data.get('captions', {})
-                    caption_tracks = captions.get('playerCaptionsTracklistRenderer', {}).get('captionTracks', [])
-                    
-                    print(f"📋 {len(caption_tracks)} caption track bulundu")
-                    
-                    # Önce Türkçe, sonra İngilizce dene
-                    for lang_code in ['tr', 'en', 'en-US', 'en-GB']:
-                        for track in caption_tracks:
-                            if track.get('languageCode') == lang_code or track.get('vssId', '').startswith(lang_code):
-                                base_url = track.get('baseUrl')
-                                if base_url:
-                                    print(f"🎯 {lang_code} track deneniyor...")
-                                    
-                                    # VTT formatında al
-                                    if 'fmt=' not in base_url:
-                                        base_url += '&fmt=vtt'
-                                    
-                                    try:
-                                        cap_response = requests.get(base_url, headers=headers, timeout=15)
-                                        if cap_response.status_code == 200 and len(cap_response.text) > 100:
-                                            transcript = self.parse_vtt_content(cap_response.text)
-                                            if transcript and len(transcript) > 100:
-                                                print(f"✅ {lang_code} transcript alındı! ({len(transcript)} karakter)")
-                                                return transcript
-                                    except Exception as e:
-                                        print(f"Track download hatası: {e}")
-                                        continue
-                    
-                except Exception as e:
-                    print(f"JSON parse hatası: {e}")
-            
-            # Fallback: Eski basit yöntem
-            print("🔄 Fallback basit yöntem deneniyor...")
-            simple_urls = [
-                f"https://www.youtube.com/api/timedtext?v={video_id}&lang=tr&fmt=vtt",
-                f"https://www.youtube.com/api/timedtext?v={video_id}&lang=en&fmt=vtt",
-                f"https://www.youtube.com/api/timedtext?v={video_id}&lang=tr",
-                f"https://www.youtube.com/api/timedtext?v={video_id}&lang=en"
-            ]
-            
-            for url in simple_urls:
-                try:
-                    response = requests.get(url, headers=headers, timeout=10)
-                    if response.status_code == 200 and len(response.text) > 100:
-                        if 'vtt' in url:
-                            transcript = self.parse_vtt_content(response.text)
-                        else:
-                            transcript = self.parse_xml_transcript(response.text)
+                    if result.returncode == 0:
+                        # VTT dosyasını bul ve oku
+                        import glob
+                        vtt_files = glob.glob(f'{temp_dir}/*.vtt')
                         
-                        if transcript and len(transcript) > 100:
-                            print("✅ Basit yöntemle transcript alındı!")
-                            return transcript
-                except:
-                    continue
+                        if vtt_files:
+                            with open(vtt_files[0], 'r', encoding='utf-8') as f:
+                                vtt_content = f.read()
+                            
+                            transcript = self.parse_vtt(vtt_content)
+                            if transcript and len(transcript) > 100:
+                                print("✅ yt-dlp ile transcript alındı!")
+                                return transcript
+                    else:
+                        print(f"yt-dlp hatası: {result.stderr}")
+                        
+                except subprocess.TimeoutExpired:
+                    print("yt-dlp timeout")
+                except Exception as e:
+                    print(f"yt-dlp subprocess hatası: {e}")
             
-            return None
+            # Fallback
+            return self.fallback_transcript(video_id)
             
         except Exception as e:
-            print(f"⚠️ Transcript alma hatası: {e}")
-            return None
+            print(f"yt-dlp genel hatası: {e}")
+            return self.fallback_transcript(video_id)
     
-    def parse_vtt_content(self, vtt_content):
-        """VTT içeriğini parse et"""
+    def parse_vtt(self, vtt_content):
+        """VTT dosyasını parse et"""
         try:
             lines = vtt_content.split('\n')
             transcript_lines = []
             
             for line in lines:
                 line = line.strip()
-                # Zaman damgası ve meta verileri atla
                 if (line and 
                     not line.startswith('WEBVTT') and 
                     not '-->' in line and 
                     not line.startswith('NOTE') and
                     not line.isdigit() and
-                    not line.startswith('<') and
-                    not line.startswith('Kind:') and
-                    not line.startswith('Language:')):
+                    not line.startswith('<')):
                     
-                    # HTML etiketlerini temizle
                     line = re.sub(r'<[^>]+>', '', line)
-                    if line and line not in transcript_lines:
+                    if line:
                         transcript_lines.append(line)
             
             return ' '.join(transcript_lines)
@@ -202,35 +137,12 @@ class handler(BaseHTTPRequestHandler):
             print(f"VTT parse hatası: {e}")
             return None
     
-    def parse_xml_transcript(self, xml_content):
-        """XML transcript'i parse et"""
-        try:
-            root = ET.fromstring(xml_content)
-            transcript_parts = []
-            
-            for text_elem in root.findall('.//text'):
-                text = text_elem.text
-                if text:
-                    # HTML entities decode
-                    text = text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
-                    text = text.replace('&quot;', '"').replace('&#39;', "'")
-                    transcript_parts.append(text.strip())
-            
-            return ' '.join(transcript_parts)
-            
-        except Exception as e:
-            print(f"⚠️ XML parse hatası: {e}")
-            return None
-    
     def fallback_transcript(self, video_id):
-        """Fallback: youtube-transcript-api kullan"""
+        """Fallback: youtube-transcript-api"""
         try:
-            print("🔄 Fallback: youtube-transcript-api deneniyor...")
-            
-            # youtube-transcript-api'yi import etmeye çalış
+            print("🔄 Fallback: youtube-transcript-api...")
             from youtube_transcript_api import YouTubeTranscriptApi
             
-            # Önce Türkçe dene
             try:
                 transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['tr'])
                 print("✅ Türkçe transcript bulundu!")
@@ -244,26 +156,13 @@ class handler(BaseHTTPRequestHandler):
             
             return ' '.join([item['text'] for item in transcript])
             
-        except ImportError:
-            print("❌ youtube-transcript-api kütüphanesi yok")
-            return self.generate_dummy_transcript(video_id)
         except Exception as e:
-            print(f"❌ Fallback hatası: {e}")
-            return self.generate_dummy_transcript(video_id)
-    
-    def generate_dummy_transcript(self, video_id):
-        """Son çare: Dummy transcript"""
-        return f"""
-        Bu bir örnek video içeriğidir. Video ID: {video_id}. 
-        Video içeriği hakkında gerçek transcript alınamadı. 
-        Bu durumda sistem otomatik olarak genel bir açıklama oluşturuyor.
-        Lütfen altyazılı bir video deneyin veya transcript API'lerini kontrol edin.
-        """
+            print(f"Fallback hatası: {e}")
+            return f"Bu video için transcript alınamadı. Video ID: {video_id}"
     
     def get_video_info(self, video_id):
         """Video bilgilerini al"""
         try:
-            # YouTube oEmbed API kullan (key gerektirmez)
             url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
             response = requests.get(url, timeout=10)
             
@@ -277,7 +176,6 @@ class handler(BaseHTTPRequestHandler):
         except:
             pass
         
-        # Fallback
         return {
             'title': 'YouTube Video',
             'channel': 'YouTube Kanalı',
@@ -285,16 +183,14 @@ class handler(BaseHTTPRequestHandler):
         }
     
     def gemini_ozet_yap(self, transcript):
-        """Google Gemini ile özet yap"""
+        """Gemini ile özet"""
         print("🤖 Gemini API'ye istek gönderiliyor...")
         
-        # Environment variable'dan al
         api_key = os.environ.get('GEMINI_API_KEY')
         
         if not api_key:
-            return "⚠️ Gemini API key gerekli! Lütfen environment variable ekleyin."
+            return "⚠️ Gemini API key gerekli!"
         
-        # Transcript'i kısalt (çok uzunsa)
         if len(transcript) > 15000:
             transcript = transcript[:15000] + "..."
             print("✂️ Transcript kısaltıldı")
@@ -312,7 +208,6 @@ class handler(BaseHTTPRequestHandler):
 - 4-5 paragraf halinde yaz
 - Ana konuları ve önemli noktaları dahil et
 - Net, anlaşılır ve akıcı Türkçe kullan
-- Gereksiz detayları çıkar, önemli bilgileri koru
 - Video izleyicisi için değerli olsun
 - Sonunda 3-4 önemli çıkarımı bullet point (•) olarak ekle
 
@@ -343,12 +238,8 @@ Video metni:
                         summary = result['candidates'][0]['content']['parts'][0]['text']
                         print("✅ Gemini özet başarıyla alındı!")
                         return summary
-                    else:
-                        return f"Beklenmeyen response yapısı: {result}"
-                else:
-                    return f"Candidates bulunamadı: {result}"
-            else:
-                return f"Gemini API Hatası ({response.status_code}): {response.text}"
+            
+            return f"Gemini API Hatası: {response.text}"
                 
         except Exception as e:
             return f"Gemini API Hatası: {str(e)}"
