@@ -1,0 +1,11 @@
+{
+  "functions": {
+    "api/summarize.py": {
+      "runtime": "python3.9"
+    }
+  },
+  "env": {
+    "GEMINI_API_KEY": "AIzaSyCC26sECnkOcgEpXd8ZuAsTGVU_0xpQ8ow"
+  }
+}
+
