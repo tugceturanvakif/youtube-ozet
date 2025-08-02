@@ -32,7 +32,7 @@ class handler(BaseHTTPRequestHandler):
             transcript = self.get_youtube_transcript(video_id)
             print(f"📄 Transcript uzunluğu: {len(transcript)} karakter")
             
-            # Video bilgilerini al
+            # Video bilgilerini al (basit)
             video_info = self.get_video_info(video_id)
             
             # Gemini ile özet yap
@@ -69,7 +69,7 @@ class handler(BaseHTTPRequestHandler):
         if transcript and len(transcript) > 100:
             return transcript
         
-        # Son olarak fallback
+        # yt-dlp Vercel'de çalışmaz, direkt fallback'e git
         return self.fallback_transcript(video_id)
     
     def try_simple_transcript(self, video_id):
@@ -191,7 +191,7 @@ class handler(BaseHTTPRequestHandler):
         """Google Gemini ile özet yap"""
         print("🤖 Gemini API'ye istek gönderiliyor...")
         
-        # Vercel environment variable'dan API key al
+        # Environment variable'dan al
         api_key = os.environ.get('GEMINI_API_KEY')
         
         if not api_key:
