@@ -27,11 +27,11 @@ class handler(BaseHTTPRequestHandler):
                 raise Exception("Geçersiz YouTube URL")
             
             video_id = match.group(1)
-            print(f"Video ID: {video_id}")
+            print(f"✅ Video ID: {video_id}")
             
-            # Transcript al - TAM FONKSİYON
+            # Gerçek transcript al
             transcript = self.get_youtube_transcript(video_id)
-            print(f"Transcript uzunluğu: {len(transcript)}")
+            print(f"📄 Transcript uzunluğu: {len(transcript)} karakter")
             
             # Video bilgilerini al
             video_info = self.get_video_info(video_id)
@@ -50,7 +50,7 @@ class handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(response, ensure_ascii=False).encode('utf-8'))
             
         except Exception as e:
-            print(f"Hata: {e}")
+            print(f"❌ Hata: {e}")
             error = {'success': False, 'error': str(e)}
             self.wfile.write(json.dumps(error, ensure_ascii=False).encode('utf-8'))
     
@@ -62,7 +62,7 @@ class handler(BaseHTTPRequestHandler):
         self.end_headers()
     
     def get_youtube_transcript(self, video_id):
-        """YouTube transcript al - KOMPLE FONKSİYON"""
+        """Alternatif transcript yöntemleri"""
         print("📝 YouTube transcript alınıyor...")
         
         # Önce basit requests ile dene
@@ -70,8 +70,8 @@ class handler(BaseHTTPRequestHandler):
         if transcript and len(transcript) > 100:
             return transcript
         
-        # Fallback
-        return self.generate_dummy_transcript(video_id)
+        # Fallback (yt-dlp Vercel'de çalışmaz, direkt fallback'e geç)
+        return self.fallback_transcript(video_id)
     
     def try_simple_transcript(self, video_id):
         """Basit requests ile transcript dene"""
@@ -108,7 +108,7 @@ class handler(BaseHTTPRequestHandler):
             return None
     
     def parse_xml_transcript(self, xml_content):
-        """XML transcript'i parse et - TAM FONKSİYON"""
+        """XML transcript'i parse et"""
         try:
             root = ET.fromstring(xml_content)
             transcript_parts = []
@@ -127,18 +127,48 @@ class handler(BaseHTTPRequestHandler):
             print(f"⚠️ XML parse hatası: {e}")
             return None
     
+    def fallback_transcript(self, video_id):
+        """Fallback: youtube-transcript-api kullan"""
+        try:
+            print("🔄 Fallback: youtube-transcript-api deneniyor...")
+            
+            # youtube-transcript-api'yi import etmeye çalış
+            from youtube_transcript_api import YouTubeTranscriptApi
+            
+            # Önce Türkçe dene
+            try:
+                transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['tr'])
+                print("✅ Türkçe transcript bulundu!")
+            except:
+                try:
+                    transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
+                    print("✅ İngilizce transcript bulundu!")
+                except:
+                    transcript = YouTubeTranscriptApi.get_transcript(video_id)
+                    print("✅ Otomatik transcript bulundu!")
+            
+            return ' '.join([item['text'] for item in transcript])
+            
+        except ImportError:
+            print("❌ youtube-transcript-api kütüphanesi yok")
+            return self.generate_dummy_transcript(video_id)
+        except Exception as e:
+            print(f"❌ Fallback hatası: {e}")
+            return self.generate_dummy_transcript(video_id)
+    
     def generate_dummy_transcript(self, video_id):
-        """Son çare: Test transcript"""
+        """Son çare: Dummy transcript"""
         return f"""
-        Bu video için gerçek transcript alınamadı. Video ID: {video_id}. 
-        Bu durum genellikle videonun altyazısının olmadığı veya özel ayarlar nedeniyle 
-        erişilemediği anlamına gelir. Lütfen altyazılı bir video deneyin.
-        Sistem test modunda çalışıyor ve genel bir açıklama oluşturuyor.
+        Bu bir örnek video içeriğidir. Video ID: {video_id}. 
+        Video içeriği hakkında gerçek transcript alınamadı. 
+        Bu durumda sistem otomatik olarak genel bir açıklama oluşturuyor.
+        Lütfen altyazılı bir video deneyin veya transcript API'lerini kontrol edin.
         """
     
     def get_video_info(self, video_id):
         """Video bilgilerini al"""
         try:
+            # YouTube oEmbed API kullan (key gerektirmez)
             url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
             response = requests.get(url, timeout=10)
             
@@ -152,6 +182,7 @@ class handler(BaseHTTPRequestHandler):
         except Exception as e:
             print(f"Video info hatası: {e}")
         
+        # Fallback
         return {
             'title': 'YouTube Video',
             'channel': 'YouTube Kanalı',
@@ -159,11 +190,14 @@ class handler(BaseHTTPRequestHandler):
         }
     
     def gemini_ozet_yap(self, transcript):
-        """Gemini ile özet"""
+        """Google Gemini ile özet yap"""
+        print("🤖 Gemini API'ye istek gönderiliyor...")
+        
+        # Vercel environment variable'dan al
         api_key = os.environ.get('GEMINI_API_KEY')
         
         if not api_key:
-            return "Gemini API key bulunamadı. Lütfen environment variable ekleyin."
+            return "⚠️ Gemini API key bulunamadı. Lütfen environment variable ekleyin."
         
         # Transcript'i kısalt (çok uzunsa)
         if len(transcript) > 15000:
