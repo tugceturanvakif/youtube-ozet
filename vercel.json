@@ -1,5 +1,7 @@
 {
   "functions": {
-    "api/*.py": "python3.12"
+    "api/summarize.py": {
+      "runtime": "python3.12"
+    }
   }
 }
