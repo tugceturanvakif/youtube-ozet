@@ -73,36 +73,79 @@ class handler(BaseHTTPRequestHandler):
         return self.fallback_transcript(video_id)
     
     def try_simple_transcript(self, video_id):
-        """Basit requests ile transcript dene"""
+        """Güçlendirilmiş requests ile transcript dene - yt-dlp benzeri"""
         try:
-            print("🔄 Basit requests ile deneniyor...")
+            print("🔄 Güçlendirilmiş requests ile deneniyor...")
             
-            # YouTube otomatik caption URL'leri
+            # İlk önce video sayfasını al ve transcript URL'lerini bul
+            video_page_url = f"https://www.youtube.com/watch?v={video_id}"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+            }
+            
+            # Video sayfasını al
+            try:
+                response = requests.get(video_page_url, headers=headers, timeout=15)
+                if response.status_code == 200:
+                    page_content = response.text
+                    
+                    # Sayfadan caption track URL'lerini çıkar
+                    import re
+                    caption_tracks = re.findall(r'"captionTracks":\[(.*?)\]', page_content)
+                    if caption_tracks:
+                        tracks_data = caption_tracks[0]
+                        # Base URL'leri çıkar
+                        base_urls = re.findall(r'"baseUrl":"(.*?)"', tracks_data)
+                        
+                        for base_url in base_urls:
+                            try:
+                                # URL'i decode et
+                                clean_url = base_url.replace('\\u0026', '&').replace('\/', '/')
+                                print(f"🔍 Caption URL deneniyor: {clean_url[:100]}...")
+                                
+                                cap_response = requests.get(clean_url, headers=headers, timeout=10)
+                                if cap_response.status_code == 200 and len(cap_response.text) > 100:
+                                    transcript = self.parse_xml_transcript(cap_response.text)
+                                    if transcript and len(transcript) > 100:
+                                        print("✅ Video sayfasından transcript alındı!")
+                                        return transcript
+                            except Exception as e:
+                                print(f"Caption URL hatası: {e}")
+                                continue
+            except Exception as e:
+                print(f"Video sayfa hatası: {e}")
+            
+            # Fallback: Eski yöntem
             urls_to_try = [
+                f"https://www.youtube.com/api/timedtext?lang=tr&v={video_id}&fmt=srv3",
+                f"https://www.youtube.com/api/timedtext?lang=en&v={video_id}&fmt=srv3",
                 f"https://www.youtube.com/api/timedtext?lang=tr&v={video_id}",
                 f"https://www.youtube.com/api/timedtext?lang=en&v={video_id}",
                 f"https://www.youtube.com/api/timedtext?lang=tr&v={video_id}&kind=asr",
-                f"https://www.youtube.com/api/timedtext?lang=en&v={video_id}&kind=asr"
+                f"https://www.youtube.com/api/timedtext?lang=en&v={video_id}&kind=asr",
+                f"https://www.youtube.com/api/timedtext?v={video_id}&lang=tr&fmt=json3",
+                f"https://www.youtube.com/api/timedtext?v={video_id}&lang=en&fmt=json3"
             ]
             
             for url in urls_to_try:
                 try:
-                    response = requests.get(url, timeout=10, headers={
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    })
+                    response = requests.get(url, timeout=15, headers=headers)
                     
                     if response.status_code == 200 and len(response.text) > 100:
                         transcript = self.parse_xml_transcript(response.text)
-                        if transcript:
-                            print("✅ Basit requests ile transcript alındı!")
+                        if transcript and len(transcript) > 100:
+                            print("✅ Direct API ile transcript alındı!")
                             return transcript
-                except:
+                except Exception as e:
+                    print(f"URL {url[:50]} hatası: {e}")
                     continue
             
             return None
             
         except Exception as e:
-            print(f"⚠️ Basit requests hatası: {e}")
+            print(f"⚠️ Güçlendirilmiş requests hatası: {e}")
             return None
     
     def parse_xml_transcript(self, xml_content):
