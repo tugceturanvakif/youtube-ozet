@@ -73,79 +73,133 @@ class handler(BaseHTTPRequestHandler):
         return self.fallback_transcript(video_id)
     
     def try_simple_transcript(self, video_id):
-        """Güçlendirilmiş requests ile transcript dene - yt-dlp benzeri"""
+        """yt-dlp benzeri güçlü transcript alma"""
         try:
-            print("🔄 Güçlendirilmiş requests ile deneniyor...")
+            print("🔄 yt-dlp benzeri transcript alma...")
             
-            # İlk önce video sayfasını al ve transcript URL'lerini bul
-            video_page_url = f"https://www.youtube.com/watch?v={video_id}"
+            # YouTube video sayfasını al
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+                'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7'
             }
             
-            # Video sayfasını al
-            try:
-                response = requests.get(video_page_url, headers=headers, timeout=15)
-                if response.status_code == 200:
-                    page_content = response.text
-                    
-                    # Sayfadan caption track URL'lerini çıkar
-                    import re
-                    caption_tracks = re.findall(r'"captionTracks":\[(.*?)\]', page_content)
-                    if caption_tracks:
-                        tracks_data = caption_tracks[0]
-                        # Base URL'leri çıkar
-                        base_urls = re.findall(r'"baseUrl":"(.*?)"', tracks_data)
-                        
-                        for base_url in base_urls:
-                            try:
-                                # URL'i decode et
-                                clean_url = base_url.replace('\\u0026', '&').replace('\/', '/')
-                                print(f"🔍 Caption URL deneniyor: {clean_url[:100]}...")
-                                
-                                cap_response = requests.get(clean_url, headers=headers, timeout=10)
-                                if cap_response.status_code == 200 and len(cap_response.text) > 100:
-                                    transcript = self.parse_xml_transcript(cap_response.text)
-                                    if transcript and len(transcript) > 100:
-                                        print("✅ Video sayfasından transcript alındı!")
-                                        return transcript
-                            except Exception as e:
-                                print(f"Caption URL hatası: {e}")
-                                continue
-            except Exception as e:
-                print(f"Video sayfa hatası: {e}")
+            response = requests.get(video_url, headers=headers, timeout=20)
+            if response.status_code != 200:
+                print("Video sayfası alınamadı")
+                return None
+                
+            page_content = response.text
             
-            # Fallback: Eski yöntem
-            urls_to_try = [
-                f"https://www.youtube.com/api/timedtext?lang=tr&v={video_id}&fmt=srv3",
-                f"https://www.youtube.com/api/timedtext?lang=en&v={video_id}&fmt=srv3",
-                f"https://www.youtube.com/api/timedtext?lang=tr&v={video_id}",
-                f"https://www.youtube.com/api/timedtext?lang=en&v={video_id}",
-                f"https://www.youtube.com/api/timedtext?lang=tr&v={video_id}&kind=asr",
-                f"https://www.youtube.com/api/timedtext?lang=en&v={video_id}&kind=asr",
-                f"https://www.youtube.com/api/timedtext?v={video_id}&lang=tr&fmt=json3",
-                f"https://www.youtube.com/api/timedtext?v={video_id}&lang=en&fmt=json3"
+            # ytInitialPlayerResponse'dan caption tracks'i çıkar
+            import re
+            
+            # Player response'u bul
+            player_response_match = re.search(r'ytInitialPlayerResponse["\s]*=["\s]*(\{.+?\});', page_content)
+            if not player_response_match:
+                player_response_match = re.search(r'"playerResponse":"(\{.*?\})"', page_content)
+                
+            if player_response_match:
+                try:
+                    import json
+                    player_data_str = player_response_match.group(1)
+                    
+                    # JSON string'i unescape et
+                    if player_data_str.startswith('"'):
+                        player_data_str = player_data_str[1:-1]
+                        player_data_str = player_data_str.replace('\\"', '"').replace('\\\\', '\\')
+                    
+                    player_data = json.loads(player_data_str)
+                    
+                    # Caption tracks'i bul
+                    captions = player_data.get('captions', {})
+                    caption_tracks = captions.get('playerCaptionsTracklistRenderer', {}).get('captionTracks', [])
+                    
+                    print(f"📋 {len(caption_tracks)} caption track bulundu")
+                    
+                    # Önce Türkçe, sonra İngilizce dene
+                    for lang_code in ['tr', 'en', 'en-US', 'en-GB']:
+                        for track in caption_tracks:
+                            if track.get('languageCode') == lang_code or track.get('vssId', '').startswith(lang_code):
+                                base_url = track.get('baseUrl')
+                                if base_url:
+                                    print(f"🎯 {lang_code} track deneniyor...")
+                                    
+                                    # VTT formatında al
+                                    if 'fmt=' not in base_url:
+                                        base_url += '&fmt=vtt'
+                                    
+                                    try:
+                                        cap_response = requests.get(base_url, headers=headers, timeout=15)
+                                        if cap_response.status_code == 200 and len(cap_response.text) > 100:
+                                            transcript = self.parse_vtt_content(cap_response.text)
+                                            if transcript and len(transcript) > 100:
+                                                print(f"✅ {lang_code} transcript alındı! ({len(transcript)} karakter)")
+                                                return transcript
+                                    except Exception as e:
+                                        print(f"Track download hatası: {e}")
+                                        continue
+                    
+                except Exception as e:
+                    print(f"JSON parse hatası: {e}")
+            
+            # Fallback: Eski basit yöntem
+            print("🔄 Fallback basit yöntem deneniyor...")
+            simple_urls = [
+                f"https://www.youtube.com/api/timedtext?v={video_id}&lang=tr&fmt=vtt",
+                f"https://www.youtube.com/api/timedtext?v={video_id}&lang=en&fmt=vtt",
+                f"https://www.youtube.com/api/timedtext?v={video_id}&lang=tr",
+                f"https://www.youtube.com/api/timedtext?v={video_id}&lang=en"
             ]
             
-            for url in urls_to_try:
+            for url in simple_urls:
                 try:
-                    response = requests.get(url, timeout=15, headers=headers)
-                    
+                    response = requests.get(url, headers=headers, timeout=10)
                     if response.status_code == 200 and len(response.text) > 100:
-                        transcript = self.parse_xml_transcript(response.text)
+                        if 'vtt' in url:
+                            transcript = self.parse_vtt_content(response.text)
+                        else:
+                            transcript = self.parse_xml_transcript(response.text)
+                        
                         if transcript and len(transcript) > 100:
-                            print("✅ Direct API ile transcript alındı!")
+                            print("✅ Basit yöntemle transcript alındı!")
                             return transcript
-                except Exception as e:
-                    print(f"URL {url[:50]} hatası: {e}")
+                except:
                     continue
             
             return None
             
         except Exception as e:
-            print(f"⚠️ Güçlendirilmiş requests hatası: {e}")
+            print(f"⚠️ Transcript alma hatası: {e}")
+            return None
+    
+    def parse_vtt_content(self, vtt_content):
+        """VTT içeriğini parse et"""
+        try:
+            lines = vtt_content.split('\n')
+            transcript_lines = []
+            
+            for line in lines:
+                line = line.strip()
+                # Zaman damgası ve meta verileri atla
+                if (line and 
+                    not line.startswith('WEBVTT') and 
+                    not '-->' in line and 
+                    not line.startswith('NOTE') and
+                    not line.isdigit() and
+                    not line.startswith('<') and
+                    not line.startswith('Kind:') and
+                    not line.startswith('Language:')):
+                    
+                    # HTML etiketlerini temizle
+                    line = re.sub(r'<[^>]+>', '', line)
+                    if line and line not in transcript_lines:
+                        transcript_lines.append(line)
+            
+            return ' '.join(transcript_lines)
+            
+        except Exception as e:
+            print(f"VTT parse hatası: {e}")
             return None
     
     def parse_xml_transcript(self, xml_content):
