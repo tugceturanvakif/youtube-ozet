@@ -5,7 +5,8 @@
     }
   },
   "env": {
-    "GEMINI_API_KEY": "AIzaSyCC26sECnkOcgEpXd8ZuAsTGVU_0xpQ8ow"
-  }
+    "GEMINI_API_KEY": "@gemini_api_key"
+  },
+  "buildCommand": "",
+  "outputDirectory": "public"
 }
-
